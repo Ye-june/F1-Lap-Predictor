@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 fastf1
 pandas
 numpy
@@ -8,6 +9,8 @@ xgboost
 streamlit
 joblib
 =======
+=======
+>>>>>>> dadbdf1fa834e763f462d9a5aad892075ded68d2
 annotated-types==0.7.0
 anyio==4.14.0
 argon2-cffi==25.1.0
@@ -137,4 +140,7 @@ webencodings==0.5.1
 websocket-client==1.9.0
 websockets==16.0
 widgetsnbextension==4.0.15
+<<<<<<< HEAD
+>>>>>>> dadbdf1fa834e763f462d9a5aad892075ded68d2
+=======
 >>>>>>> dadbdf1fa834e763f462d9a5aad892075ded68d2
