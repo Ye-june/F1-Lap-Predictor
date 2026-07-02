@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
 DRIVERS = [
     ("VER", "Red Bull Racing", 0.00),
     ("NOR", "McLaren", 0.25),
@@ -15,13 +14,20 @@ DRIVERS = [
 
 
 def make_demo_laps(n_laps: int = 35, seed: int = 7) -> pd.DataFrame:
-    """Create fake but realistic F1 lap data for demos and tests."""
+    """Create fake-but-realistic lap data for demos and offline tests.
+
+    This stays in the project so the app and unit tests still work when FastF1
+    is unavailable or a live data request is rate limited.
+    """
+
+    if n_laps < 12:
+        raise ValueError("n_laps must be at least 12 so every driver can pit safely.")
 
     rng = np.random.default_rng(seed)
     rows = []
 
     for driver, team, pace_delta in DRIVERS:
-        pit_lap = int(rng.integers(12, n_laps - 5))
+        pit_lap = int(rng.integers(8, max(9, n_laps - 4)))
         stint = 1
         compound = "MEDIUM"
         tyre_life = 0
@@ -35,12 +41,11 @@ def make_demo_laps(n_laps: int = 35, seed: int = 7) -> pd.DataFrame:
                 tyre_life += 1
 
             is_pit_lap = lap == pit_lap
-
             fuel_effect = -0.045 * lap
             tyre_degradation = 0.035 * tyre_life
             compound_effect = 0.25 if compound == "HARD" else 0.0
             pit_effect = 22.0 if is_pit_lap else 0.0
-            random_noise = rng.normal(0, 0.25)
+            traffic_noise = rng.normal(0, 0.25)
 
             lap_time = (
                 91.5
@@ -49,7 +54,7 @@ def make_demo_laps(n_laps: int = 35, seed: int = 7) -> pd.DataFrame:
                 + tyre_degradation
                 + compound_effect
                 + pit_effect
-                + random_noise
+                + traffic_noise
             )
 
             rows.append(
@@ -64,6 +69,11 @@ def make_demo_laps(n_laps: int = 35, seed: int = 7) -> pd.DataFrame:
                     "Compound": compound,
                     "TyreLife": tyre_life,
                     "TrackStatus": "1",
+                    "AirTemp": 24.0 + rng.normal(0, 0.3),
+                    "TrackTemp": 36.0 + rng.normal(0, 0.5),
+                    "Humidity": 55.0 + rng.normal(0, 2.0),
+                    "WindSpeed": 2.0 + rng.normal(0, 0.4),
+                    "Rainfall": False,
                     "LapTime": pd.to_timedelta(lap_time, unit="s"),
                     "PitInTime": pd.to_timedelta(lap * 95, unit="s") if is_pit_lap else pd.NaT,
                     "PitOutTime": pd.NaT,
