@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
@@ -9,29 +8,45 @@ import pandas as pd
 def _fastf1():
     try:
         import fastf1
-    except ImportError as exc:  # pragma: no cover - exercised only without dependency
+    except ImportError as exc:
         raise ImportError(
             "FastF1 is not installed. Run `pip install -r requirements.txt` first."
         ) from exc
     return fastf1
 
 
-def enable_fastf1_cache(cache_dir: str | Path = ".fastf1_cache") -> Path:
-    """Create and enable the local FastF1 cache directory."""
-
+def enable_fastf1_cache(
+    cache_dir: str | Path = ".fastf1_cache",
+    *,
+    force_renew: bool = False,
+) -> Path:
     fastf1 = _fastf1()
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
-    fastf1.Cache.enable_cache(str(cache_path))
+    fastf1.Cache.enable_cache(str(cache_path), force_renew=force_renew)
     return cache_path
 
 
 def load_event_schedule(year: int) -> pd.DataFrame:
-    """Return the FastF1 event schedule for one season."""
-
     fastf1 = _fastf1()
     schedule = fastf1.get_event_schedule(int(year), include_testing=False)
     return pd.DataFrame(schedule)
+
+
+def _assert_laps_are_loaded(session) -> None:
+    try:
+        laps = session.laps
+    except Exception as exc:
+        raise ValueError(
+            "FastF1 created the session, but lap timing was not loaded. "
+            "Try an older completed event, uncheck telemetry, or force a cache re-download."
+        ) from exc
+
+    if laps is None or len(laps) == 0:
+        raise ValueError(
+            "FastF1 loaded the session, but returned zero laps. "
+            "Try an older completed event or force a cache re-download."
+        )
 
 
 def load_fastf1_session(
@@ -41,24 +56,49 @@ def load_fastf1_session(
     *,
     cache_dir: str | Path = ".fastf1_cache",
     include_telemetry: bool = True,
+    force_renew: bool = False,
 ):
-    """Load a FastF1 session object.
-
-    ``include_telemetry=True`` is needed for the track map because driver/circuit
-    coordinates come from position telemetry.
-    """
-
-    enable_fastf1_cache(cache_dir)
+    enable_fastf1_cache(cache_dir, force_renew=force_renew)
     fastf1 = _fastf1()
-    session = fastf1.get_session(int(year), event, session_name)
-    session.load(laps=True, telemetry=include_telemetry, weather=True, messages=False)
-    return session
+
+    telemetry_attempts = [include_telemetry]
+    if include_telemetry:
+        telemetry_attempts.append(False)
+
+    errors: list[str] = []
+
+    for telemetry_enabled in telemetry_attempts:
+        session = fastf1.get_session(int(year), event, session_name)
+
+        try:
+            session.load(
+                laps=True,
+                telemetry=telemetry_enabled,
+                weather=True,
+                messages=False,
+            )
+            _assert_laps_are_loaded(session)
+            return session
+        except Exception as exc:
+            errors.append(f"telemetry={telemetry_enabled}: {exc}")
+
+    raise ValueError(
+        "FastF1 could not load usable lap data for this session. "
+        "Try a completed older race, uncheck telemetry, enable force re-download, "
+        "or clear the Streamlit cache. "
+        f"Details: {' | '.join(errors)}"
+    )
 
 
 def session_laps_to_frame(session) -> pd.DataFrame:
-    """Turn a loaded FastF1 session into a normal pandas DataFrame for modeling."""
+    try:
+        laps = pd.DataFrame(session.laps.copy())
+    except Exception as exc:
+        raise ValueError(
+            "The FastF1 session exists, but lap timing is unavailable. "
+            "Reload the session or choose a completed session with timing data."
+        ) from exc
 
-    laps = pd.DataFrame(session.laps.copy())
     if laps.empty:
         raise ValueError("FastF1 returned no laps for this session.")
 
@@ -71,8 +111,6 @@ def session_laps_to_frame(session) -> pd.DataFrame:
         weather = weather[[column for column in weather.columns if column not in laps.columns]]
         laps = pd.concat([laps.reset_index(drop=True), weather], axis=1)
     except Exception:
-        # Weather is useful, but the predictor should still work if a session has
-        # incomplete weather data or the API shape changes slightly.
         pass
 
     return laps.reset_index(drop=True)
@@ -85,22 +123,20 @@ def load_fastf1_laps(
     *,
     cache_dir: str | Path = ".fastf1_cache",
     include_telemetry: bool = True,
+    force_renew: bool = False,
 ) -> tuple[object, pd.DataFrame]:
-    """Load a session and return ``(session, laps_dataframe)``."""
-
     session = load_fastf1_session(
         year,
         event,
         session_name,
         cache_dir=cache_dir,
         include_telemetry=include_telemetry,
+        force_renew=force_renew,
     )
     return session, session_laps_to_frame(session)
 
 
 def available_events(schedule: pd.DataFrame) -> list[str]:
-    """Return clean event names for a sidebar dropdown."""
-
     if "EventName" not in schedule.columns:
         return []
 

@@ -26,11 +26,15 @@ st.set_page_config(
     layout="wide",
 )
 
+
 def _theme_color(option_name: str, fallback: str | None = None) -> str | None:
+    """Read Streamlit theme colors safely."""
+
     try:
         return st.get_option(option_name) or fallback
     except Exception:
         return fallback
+
 
 @st.cache_data(show_spinner="Loading F1 calendar...")
 def cached_schedule(year: int):
@@ -38,13 +42,20 @@ def cached_schedule(year: int):
 
 
 @st.cache_resource(show_spinner="Downloading FastF1 session data...")
-def cached_fastf1_session(year: int, event: str, session_name: str, include_telemetry: bool):
+def cached_fastf1_session(
+    year: int,
+    event: str,
+    session_name: str,
+    include_telemetry: bool,
+    force_renew: bool,
+):
     return load_fastf1_laps(
         year,
         event,
         session_name,
         cache_dir=ROOT / ".fastf1_cache",
         include_telemetry=include_telemetry,
+        force_renew=force_renew,
     )
 
 
@@ -59,14 +70,28 @@ data_source = st.sidebar.radio("Choose data source", ["FastF1", "Demo Data"])
 raw_laps = None
 session = None
 session_label = "Demo Grand Prix"
+quick_laps_only = False
 
 if data_source == "Demo Data":
-    n_laps = st.sidebar.slider("Number of demo laps", min_value=20, max_value=70, value=35)
+    n_laps = st.sidebar.slider(
+        "Number of demo laps",
+        min_value=20,
+        max_value=70,
+        value=35,
+    )
     raw_laps = make_demo_laps(n_laps=n_laps)
     st.sidebar.info("Demo data is only for offline development. Use FastF1 for the real project.")
+
 else:
     current_year = datetime.now().year
-    year = st.sidebar.selectbox("Season", list(range(current_year, 2017, -1)), index=1 if current_year >= 2026 else 0)
+    year_options = list(range(current_year, 2017, -1))
+    default_year_index = 1 if current_year >= 2026 else 0
+
+    year = st.sidebar.selectbox(
+        "Season",
+        year_options,
+        index=default_year_index,
+    )
 
     try:
         schedule = cached_schedule(year)
@@ -77,35 +102,75 @@ else:
 
     if events:
         event = st.sidebar.selectbox("Grand Prix", events)
-        session_name = st.sidebar.selectbox("Session", ["Race", "Qualifying", "Sprint", "Practice 3", "Practice 2", "Practice 1"])
-        include_telemetry = st.sidebar.checkbox("Load telemetry for track map", value=True)
-        quick_laps_only = st.sidebar.checkbox("Use only quick laps (107% rule)", value=False)
+        session_name = st.sidebar.selectbox(
+            "Session",
+            ["Race", "Qualifying", "Sprint", "Practice 3", "Practice 2", "Practice 1"],
+        )
+
+        include_telemetry = st.sidebar.checkbox(
+            "Load telemetry for track map",
+            value=True,
+        )
+        quick_laps_only = st.sidebar.checkbox(
+            "Use only quick laps (107% rule)",
+            value=False,
+        )
+        force_renew = st.sidebar.checkbox(
+            "Force re-download FastF1 cache",
+            value=False,
+            help="Use this if FastF1 says data was not loaded or the cache seems stale.",
+        )
+
+        if st.sidebar.button("Clear Streamlit cache"):
+            st.cache_data.clear()
+            st.cache_resource.clear()
+            st.rerun()
 
         if st.sidebar.button("Load FastF1 session", type="primary"):
             try:
-                session, raw_laps = cached_fastf1_session(year, event, session_name, include_telemetry)
+                session, raw_laps = cached_fastf1_session(
+                    year,
+                    event,
+                    session_name,
+                    include_telemetry,
+                    force_renew,
+                )
+
                 session_label = f"{year} {event} {session_name}"
+
                 st.session_state["session"] = session
                 st.session_state["raw_laps"] = raw_laps
                 st.session_state["session_label"] = session_label
                 st.session_state["quick_laps_only"] = quick_laps_only
+
             except Exception as exc:
                 st.error(f"Could not load FastF1 data: {exc}")
+                st.info(
+                    "Try one of these: uncheck telemetry, choose an older completed race, "
+                    "enable force re-download, or clear the Streamlit cache."
+                )
+
         else:
             session = st.session_state.get("session")
             raw_laps = st.session_state.get("raw_laps")
             session_label = st.session_state.get("session_label", session_label)
             quick_laps_only = st.session_state.get("quick_laps_only", False)
 
+
 if raw_laps is None:
     st.info("Choose a session in the sidebar and load the data to start.")
     st.stop()
 
+
 try:
-    prepared_laps = prepare_lap_frame(raw_laps, quick_laps_only=st.session_state.get("quick_laps_only", False))
+    prepared_laps = prepare_lap_frame(
+        raw_laps,
+        quick_laps_only=quick_laps_only,
+    )
 except Exception as exc:
     st.error(f"Could not prepare lap features: {exc}")
     st.stop()
+
 
 st.subheader(session_label)
 st.caption(f"Usable laps after cleaning: {len(prepared_laps):,}")
@@ -115,16 +180,29 @@ model_name = st.sidebar.selectbox(
     ["gradient_boosting", "hist_gradient_boosting", "random_forest"],
     help="Gradient boosting is the recommended model for tabular lap-time prediction.",
 )
-test_size = st.sidebar.slider("Validation size", min_value=0.10, max_value=0.40, value=0.20, step=0.05)
+
+test_size = st.sidebar.slider(
+    "Validation size",
+    min_value=0.10,
+    max_value=0.40,
+    value=0.20,
+    step=0.05,
+)
 
 try:
-    bundle = train_model(prepared_laps, model_name=model_name, test_size=test_size)
+    bundle = train_model(
+        prepared_laps,
+        model_name=model_name,
+        test_size=test_size,
+    )
     predictions = predict_laps(bundle, prepared_laps)
 except Exception as exc:
     st.error(f"Could not train the model: {exc}")
     st.stop()
 
+
 st.subheader("Model metrics")
+
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("MAE", f"{bundle.metrics['mae_sec']:.3f}s")
 col2.metric("RMSE", f"{bundle.metrics['rmse_sec']:.3f}s")
@@ -132,19 +210,39 @@ col3.metric("R²", f"{bundle.metrics['r2']:.3f}")
 col4.metric("Train rows", f"{bundle.train_rows:,}")
 col5.metric("Test rows", f"{bundle.test_rows:,}")
 
-st.caption("Validation uses a chronological split, not a random split, so later laps are tested against earlier laps.")
+st.caption(
+    "Validation uses a chronological split, not a random split, so later laps are tested against earlier laps."
+)
+
 
 if session is not None:
     st.subheader("Track map")
+
+    available_drivers = sorted(prepared_laps["driver"].unique().tolist())
+
     map_drivers = st.multiselect(
         "Drivers on map",
-        sorted(prepared_laps["driver"].unique().tolist()),
-        default=sorted(prepared_laps["driver"].unique().tolist())[:5],
+        available_drivers,
+        default=available_drivers[:5],
     )
+
     lap_min = int(prepared_laps["lap_number"].min())
     lap_max = int(prepared_laps["lap_number"].max())
-    map_lap = st.slider("Map lap", min_value=lap_min, max_value=lap_max, value=lap_min)
-    lap_progress = st.slider("Lap progress", min_value=0.0, max_value=1.0, value=0.50, step=0.05)
+
+    map_lap = st.slider(
+        "Map lap",
+        min_value=lap_min,
+        max_value=lap_max,
+        value=lap_min,
+    )
+
+    lap_progress = st.slider(
+        "Lap progress",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.50,
+        step=0.05,
+    )
 
     try:
         st.plotly_chart(
@@ -160,25 +258,43 @@ if session is not None:
             ),
             use_container_width=True,
         )
-        st.caption("Hover over the small dots to see driver, team, lap, tyre, and lap-time info.")
+
+        st.caption(
+            "Hover over the small dots to see driver, team, lap, tyre, and lap-time info."
+        )
+
     except Exception as exc:
         st.warning(
             "Track map needs telemetry. Re-load the session with 'Load telemetry for track map' checked. "
             f"Details: {exc}"
         )
 
+
 drivers = ["All"] + sorted(predictions["driver"].unique().tolist())
 selected_driver = st.selectbox("Driver", drivers)
 
 chart_col, error_col = st.columns([2, 1])
-with chart_col:
-    st.plotly_chart(prediction_trace(predictions, selected_driver), use_container_width=True)
-with error_col:
-    st.plotly_chart(driver_error_bar(predictions), use_container_width=True)
 
-st.plotly_chart(residual_chart(predictions, selected_driver), use_container_width=True)
+with chart_col:
+    st.plotly_chart(
+        prediction_trace(predictions, selected_driver),
+        use_container_width=True,
+    )
+
+with error_col:
+    st.plotly_chart(
+        driver_error_bar(predictions),
+        use_container_width=True,
+    )
+
+st.plotly_chart(
+    residual_chart(predictions, selected_driver),
+    use_container_width=True,
+)
+
 
 st.subheader("Prediction table")
+
 display_columns = [
     "driver",
     "team",
@@ -190,4 +306,8 @@ display_columns = [
     "prediction_error_sec",
     "absolute_error_sec",
 ]
-st.dataframe(predictions[display_columns].round(3), use_container_width=True)
+
+st.dataframe(
+    predictions[display_columns].round(3),
+    use_container_width=True,
+)
