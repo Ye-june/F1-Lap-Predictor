@@ -1,6 +1,6 @@
 # F1 Lap Predictor
 
-Web Link: https://f1-lap-predicion-ml.streamlit.app/
+Web Link: [https://f1-lap-predicion-ml.streamlit.app/](https://f1-ml-lap-predictor.streamlit.app/)
 
 A Streamlit machine-learning app that predicts Formula 1 lap times using real FastF1 session data. It also draws an accurate circuit map from FastF1 position telemetry and overlays selected driver markers on the track.
 
