@@ -48,6 +48,9 @@ def build_track_map(
     lap_number: int | None = None,
     lap_progress: float = 0.50,
     show_corners: bool = True,
+    background_color: str = "rgba(0,0,0,0)",
+    text_color: str | None = None,
+    driver_marker_size: int = 7,
 ) -> go.Figure:
     """Create an accurate circuit map with optional driver markers.
 
@@ -133,10 +136,18 @@ def build_track_map(
                 go.Scatter(
                     x=[point[0]],
                     y=[point[1]],
-                    mode="markers+text",
-                    text=[driver],
-                    textposition="top center",
-                    marker={"size": 18, "line": {"width": 2}},
+                    mode="markers",
+                    customdata=[
+                        (
+                            f"<b>{driver}</b><br>"
+                            f"Lap: {lap.get('LapNumber', 'Unknown')}<br>"
+                            f"Team: {lap.get('Team', 'Unknown')}<br>"
+                            f"Compound: {lap.get('Compound', 'Unknown')}<br>"
+                            f"Progress: {lap_progress:.0%}"
+                        )
+                    ],
+                    hovertemplate="%{customdata}<extra></extra>",
+                    marker={"size": driver_marker_size, "line": {"width": 1}},
                     name=driver,
                 )
             )
@@ -146,14 +157,20 @@ def build_track_map(
     if lap_number is not None:
         title += f" — lap {lap_number}, {lap_progress:.0%} lap progress"
 
-    fig.update_layout(
-        title=title,
-        xaxis={"visible": False},
-        yaxis={"visible": False, "scaleanchor": "x", "scaleratio": 1},
-        plot_bgcolor="white",
-        height=650,
-        margin={"l": 20, "r": 20, "t": 60, "b": 20},
-        legend_title="Drivers",
-    )
+    layout = {
+        "title": title,
+        "xaxis": {"visible": False},
+        "yaxis": {"visible": False, "scaleanchor": "x", "scaleratio": 1},
+        "plot_bgcolor": background_color,
+        "paper_bgcolor": background_color,
+        "height": 650,
+        "margin": {"l": 20, "r": 20, "t": 60, "b": 20},
+        "legend_title": "Drivers",
+    }
+
+    if text_color:
+        layout["font"] = {"color": text_color}
+
+    fig.update_layout(**layout)
 
     return fig
