@@ -1,6 +1,10 @@
-venv/
-cache/
 __pycache__/
-.ipynb_checkpoints/
-
-*.pkl
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+.DS_Store
+models/
+.fastf1_cache/
+.streamlit/secrets.toml
