@@ -26,6 +26,11 @@ st.set_page_config(
     layout="wide",
 )
 
+def _theme_color(option_name: str, fallback: str | None = None) -> str | None:
+    try:
+        return st.get_option(option_name) or fallback
+    except Exception:
+        return fallback
 
 @st.cache_data(show_spinner="Loading F1 calendar...")
 def cached_schedule(year: int):
@@ -129,17 +134,6 @@ col5.metric("Test rows", f"{bundle.test_rows:,}")
 
 st.caption("Validation uses a chronological split, not a random split, so later laps are tested against earlier laps.")
 
-drivers = ["All"] + sorted(predictions["driver"].unique().tolist())
-selected_driver = st.selectbox("Driver", drivers)
-
-chart_col, error_col = st.columns([2, 1])
-with chart_col:
-    st.plotly_chart(prediction_trace(predictions, selected_driver), use_container_width=True)
-with error_col:
-    st.plotly_chart(driver_error_bar(predictions), use_container_width=True)
-
-st.plotly_chart(residual_chart(predictions, selected_driver), use_container_width=True)
-
 if session is not None:
     st.subheader("Track map")
     map_drivers = st.multiselect(
@@ -160,14 +154,29 @@ if session is not None:
                 lap_number=map_lap,
                 lap_progress=lap_progress,
                 show_corners=True,
+                background_color=_theme_color("theme.backgroundColor", "rgba(0,0,0,0)"),
+                text_color=_theme_color("theme.textColor"),
+                driver_marker_size=7,
             ),
             use_container_width=True,
         )
+        st.caption("Hover over the small dots to see driver, team, lap, tyre, and lap-time info.")
     except Exception as exc:
         st.warning(
             "Track map needs telemetry. Re-load the session with 'Load telemetry for track map' checked. "
             f"Details: {exc}"
         )
+
+drivers = ["All"] + sorted(predictions["driver"].unique().tolist())
+selected_driver = st.selectbox("Driver", drivers)
+
+chart_col, error_col = st.columns([2, 1])
+with chart_col:
+    st.plotly_chart(prediction_trace(predictions, selected_driver), use_container_width=True)
+with error_col:
+    st.plotly_chart(driver_error_bar(predictions), use_container_width=True)
+
+st.plotly_chart(residual_chart(predictions, selected_driver), use_container_width=True)
 
 st.subheader("Prediction table")
 display_columns = [
