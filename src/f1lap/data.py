@@ -5,6 +5,9 @@ from pathlib import Path
 import pandas as pd
 
 
+RACE_SESSION_NAMES = {"race", "r"}
+
+
 def _fastf1():
     try:
         import fastf1
@@ -36,19 +39,46 @@ def enable_fastf1_cache(
 
 
 def load_event_schedule(year: int) -> pd.DataFrame:
-    """Return the FastF1 event schedule for one season."""
+    """Return an event schedule, falling back to Jolpica if needed."""
 
     fastf1 = _fastf1()
-    schedule = fastf1.get_event_schedule(
-        int(year),
-        include_testing=False,
+    errors: list[str] = []
+
+    for backend in (None, "ergast"):
+        backend_label = backend or "default"
+
+        try:
+            kwargs = {
+                "year": int(year),
+                "include_testing": False,
+            }
+            if backend is not None:
+                kwargs["backend"] = backend
+
+            schedule = pd.DataFrame(fastf1.get_event_schedule(**kwargs))
+
+            if schedule.empty:
+                raise ValueError("the returned schedule was empty")
+            if "EventName" not in schedule.columns:
+                raise ValueError("the schedule did not contain EventName")
+
+            return schedule
+        except Exception as exc:
+            errors.append(f"{backend_label}: {exc}")
+
+    raise ValueError(
+        f"Could not load the {year} event schedule. "
+        f"Details: {' | '.join(errors)}"
     )
 
-    return pd.DataFrame(schedule)
 
-
-def _get_session(year: int, event: str | int, session_name: str, backend: str | None):
-    """Create a FastF1 session, falling back for older FastF1 versions if needed."""
+def _get_session(
+    year: int,
+    event: str | int,
+    session_name: str,
+    backend: str | None,
+):
+    """Create a FastF1 session, with compatibility for older releases."""
 
     fastf1 = _fastf1()
 
@@ -67,7 +97,6 @@ def _get_session(year: int, event: str | int, session_name: str, backend: str | 
             backend=backend,
         )
     except TypeError:
-        # Some FastF1 versions may not support the backend keyword.
         return fastf1.get_session(
             int(year),
             event,
@@ -76,13 +105,14 @@ def _get_session(year: int, event: str | int, session_name: str, backend: str | 
 
 
 def _assert_laps_are_loaded(session, *, backend_label: str) -> None:
-    """Fail clearly if FastF1 created a session but did not load lap timing."""
+    """Fail clearly if FastF1 created a session but loaded no lap timing."""
 
     try:
         laps = session.laps
     except Exception as exc:
         raise ValueError(
-            f"{backend_label}: FastF1 created the session, but lap timing was not loaded."
+            f"{backend_label}: FastF1 created the session, "
+            "but lap timing was not loaded."
         ) from exc
 
     if laps is None or len(laps) == 0:
@@ -131,7 +161,6 @@ def _load_one_attempt(
         backend_label=backend_label,
     )
 
-    # Store this so the app/dataframe can explain how the data was loaded.
     session._f1lap_backend = backend_label
     session._f1lap_telemetry_loaded = telemetry
 
@@ -141,32 +170,19 @@ def _load_one_attempt(
 def _load_attempt_plan(
     *,
     include_telemetry: bool,
-    session_name: str,
 ) -> list[tuple[str | None, bool, bool]]:
-    """Return FastF1 loading attempts in safest order.
+    """Return a small FastF1 retry plan before using Jolpica.
 
-    Tuple format:
-        (backend, telemetry, weather)
+    Repeating several schedule backends does not solve data-centre IP blocking,
+    because lap timing still comes from Formula 1's live-timing endpoints. The
+    second attempt only removes optional telemetry and weather requests.
     """
 
-    attempts: list[tuple[str | None, bool, bool]] = []
+    attempts = [
+        (None, include_telemetry, True),
+        (None, False, False),
+    ]
 
-    # First try normal FastF1 behavior.
-    attempts.append((None, include_telemetry, True))
-
-    # If telemetry was requested, retry lap-only before switching backend.
-    if include_telemetry:
-        attempts.append((None, False, True))
-
-    # Explicit f1timing attempt. This often behaves differently than default fallback.
-    attempts.append(("f1timing", False, True))
-
-    # Ergast is mainly useful for race lap timing fallback. It does not provide
-    # modern telemetry, tyre, and local timing detail like the official F1 timing API.
-    if session_name.lower() in {"race", "r", "sprint", "s"}:
-        attempts.append(("ergast", False, False))
-
-    # Remove duplicates while preserving order.
     clean_attempts: list[tuple[str | None, bool, bool]] = []
     seen: set[tuple[str | None, bool, bool]] = set()
 
@@ -187,12 +203,7 @@ def load_fastf1_session(
     include_telemetry: bool = True,
     force_renew: bool = False,
 ):
-    """Load a FastF1 session object with backend fallbacks.
-
-    FastF1's normal/live-timing backend gives the best data. If that fails to
-    expose lap timing, this tries f1timing explicitly and then Ergast for race
-    sessions so the model can still run.
-    """
+    """Load a FastF1 session before the caller considers other sources."""
 
     enable_fastf1_cache(
         cache_dir,
@@ -203,7 +214,6 @@ def load_fastf1_session(
 
     for backend, telemetry, weather in _load_attempt_plan(
         include_telemetry=include_telemetry,
-        session_name=session_name,
     ):
         backend_label = backend or "default"
 
@@ -218,20 +228,21 @@ def load_fastf1_session(
             )
         except Exception as exc:
             errors.append(
-                f"{backend_label}, telemetry={telemetry}, weather={weather}: {exc}"
+                f"{backend_label}, telemetry={telemetry}, "
+                f"weather={weather}: {exc}"
             )
 
     raise ValueError(
         "FastF1 could not load usable lap data for this session. "
-        "This usually means the F1 live timing endpoints failed from the deployed environment "
-        "or the selected session has incomplete public timing data. "
-        "Try a different completed race, enable force re-download, or use Demo Data. "
+        "The Formula 1 live-timing service may be unavailable from the "
+        "deployment network, or the selected session may have incomplete "
+        "public timing data. "
         f"Details: {' | '.join(errors)}"
     )
 
 
 def session_laps_to_frame(session) -> pd.DataFrame:
-    """Turn a loaded FastF1 session into a normal pandas DataFrame for modeling."""
+    """Turn a loaded FastF1 session into a normal pandas DataFrame."""
 
     try:
         laps = pd.DataFrame(session.laps.copy())
@@ -267,7 +278,7 @@ def session_laps_to_frame(session) -> pd.DataFrame:
     )
 
     laps["DataBackend"] = str(
-        getattr(session, "_f1lap_backend", "unknown")
+        getattr(session, "_f1lap_backend", "fastf1")
     )
 
     laps["TelemetryLoaded"] = bool(
@@ -289,6 +300,264 @@ def session_laps_to_frame(session) -> pd.DataFrame:
     return laps.reset_index(drop=True)
 
 
+def _collect_ergast_pages(response) -> pd.DataFrame:
+    """Collect every page from a pandas-style FastF1 Ergast response."""
+
+    frames: list[pd.DataFrame] = []
+    current = response
+
+    while True:
+        content = getattr(current, "content", None)
+
+        if content is None:
+            frame = pd.DataFrame(current)
+            if not frame.empty:
+                frames.append(frame)
+        elif isinstance(content, (list, tuple)):
+            for item in content:
+                frame = pd.DataFrame(item)
+                if not frame.empty:
+                    frames.append(frame)
+        else:
+            frame = pd.DataFrame(content)
+            if not frame.empty:
+                frames.append(frame)
+
+        get_next_page = getattr(current, "get_next_result_page", None)
+        if get_next_page is None:
+            break
+
+        try:
+            current = get_next_page()
+        except ValueError:
+            break
+
+    if not frames:
+        return pd.DataFrame()
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def _normalise_event_name(value: str) -> str:
+    text = str(value).strip().casefold()
+
+    for suffix in (" grand prix", " gp"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+            break
+
+    return "".join(character for character in text if character.isalnum())
+
+
+def _resolve_jolpica_event(
+    year: int,
+    event: str | int,
+) -> tuple[int, str]:
+    """Resolve an event name or round number using the Jolpica schedule."""
+
+    fastf1 = _fastf1()
+    schedule = pd.DataFrame(
+        fastf1.get_event_schedule(
+            int(year),
+            include_testing=False,
+            backend="ergast",
+        )
+    )
+
+    required = {"RoundNumber", "EventName"}
+    missing = required.difference(schedule.columns)
+    if schedule.empty or missing:
+        raise ValueError(
+            "Jolpica returned an invalid event schedule. "
+            f"Missing columns: {sorted(missing)}"
+        )
+
+    is_round_number = isinstance(event, int) or (
+        isinstance(event, str) and event.strip().isdigit()
+    )
+
+    if is_round_number:
+        round_number = int(event)
+        matching = schedule[
+            pd.to_numeric(schedule["RoundNumber"], errors="coerce")
+            == round_number
+        ]
+    else:
+        target = _normalise_event_name(str(event))
+        normalised_names = schedule["EventName"].map(_normalise_event_name)
+        matching = schedule[normalised_names == target]
+
+    if matching.empty:
+        raise ValueError(
+            f"Could not find {event!r} in the {year} Jolpica schedule."
+        )
+
+    row = matching.iloc[0]
+    return int(row["RoundNumber"]), str(row["EventName"])
+
+
+def _jolpica_laps_to_frame(
+    laps: pd.DataFrame,
+    results: pd.DataFrame,
+    *,
+    year: int,
+    event_name: str,
+) -> pd.DataFrame:
+    """Convert Jolpica lap timing into the FastF1-style columns used here."""
+
+    required = {"number", "driverId", "time"}
+    missing = required.difference(laps.columns)
+    if laps.empty or missing:
+        raise ValueError(
+            "Jolpica returned invalid lap data. "
+            f"Missing columns: {sorted(missing)}"
+        )
+
+    output = laps.copy()
+    output["driverId"] = output["driverId"].astype(str)
+
+    driver_map: dict[str, str] = {}
+    team_map: dict[str, str] = {}
+
+    if not results.empty and "driverId" in results.columns:
+        result_rows = results.drop_duplicates("driverId").copy()
+        result_rows["driverId"] = result_rows["driverId"].astype(str)
+
+        display_driver = pd.Series(
+            pd.NA,
+            index=result_rows.index,
+            dtype="object",
+        )
+
+        if "driverCode" in result_rows.columns:
+            display_driver = result_rows["driverCode"].replace("", pd.NA)
+
+        if "familyName" in result_rows.columns:
+            display_driver = display_driver.fillna(
+                result_rows["familyName"].replace("", pd.NA)
+            )
+
+        display_driver = display_driver.fillna(result_rows["driverId"])
+        driver_map = dict(zip(result_rows["driverId"], display_driver))
+
+        if "constructorName" in result_rows.columns:
+            team_names = result_rows["constructorName"].fillna("Unknown")
+            team_map = dict(zip(result_rows["driverId"], team_names))
+
+    output["Driver"] = output["driverId"].map(driver_map)
+    output["Driver"] = output["Driver"].fillna(output["driverId"]).astype(str)
+
+    output["Team"] = output["driverId"].map(team_map).fillna("Unknown")
+
+    output = output.rename(
+        columns={
+            "number": "LapNumber",
+            "time": "LapTime",
+            "position": "Position",
+        }
+    )
+
+    output["LapNumber"] = pd.to_numeric(
+        output["LapNumber"],
+        errors="coerce",
+    )
+    lap_time_values = output["LapTime"]
+    if not pd.api.types.is_timedelta64_dtype(lap_time_values):
+        lap_time_values = lap_time_values.astype("string").map(
+            lambda value: (
+                f"00:{value}"
+                if value is not pd.NA and str(value).count(":") == 1
+                else value
+            )
+        )
+
+    output["LapTime"] = pd.to_timedelta(
+        lap_time_values,
+        errors="coerce",
+    )
+
+    output["Year"] = int(year)
+    output["EventName"] = str(event_name)
+    output["SessionName"] = "Race"
+    output["Stint"] = 1
+    output["TyreLife"] = pd.NA
+    output["Compound"] = "Unknown"
+    output["TrackStatus"] = "1"
+    output["AirTemp"] = pd.NA
+    output["TrackTemp"] = pd.NA
+    output["Humidity"] = pd.NA
+    output["WindSpeed"] = pd.NA
+    output["Rainfall"] = False
+    output["IsAccurate"] = True
+    output["DataBackend"] = "jolpica"
+    output["TelemetryLoaded"] = False
+
+    output = output.dropna(subset=["LapNumber", "LapTime"])
+
+    if output.empty:
+        raise ValueError("Jolpica returned no usable lap-time values.")
+
+    return output.sort_values(
+        ["LapNumber", "Driver"],
+        ignore_index=True,
+    )
+
+
+def load_jolpica_race_laps(
+    year: int,
+    event: str | int,
+) -> pd.DataFrame:
+    """Load basic race lap timing from Jolpica.
+
+    Jolpica provides lap number, driver, position, and lap time. It does not
+    provide FastF1 telemetry, tyre compounds, detailed track status, or weather.
+    """
+
+    try:
+        from fastf1.ergast import Ergast
+    except ImportError as exc:
+        raise ImportError(
+            "The FastF1 Ergast/Jolpica interface is unavailable."
+        ) from exc
+
+    round_number, event_name = _resolve_jolpica_event(year, event)
+
+    ergast = Ergast(
+        result_type="pandas",
+        auto_cast=True,
+        limit=1000,
+    )
+
+    lap_response = ergast.get_lap_times(
+        season=int(year),
+        round=round_number,
+        limit=1000,
+    )
+    laps = _collect_ergast_pages(lap_response)
+
+    if laps.empty:
+        raise ValueError(
+            f"Jolpica returned no laps for {year} round {round_number}."
+        )
+
+    try:
+        result_response = ergast.get_race_results(
+            season=int(year),
+            round=round_number,
+            limit=100,
+        )
+        results = _collect_ergast_pages(result_response)
+    except Exception:
+        results = pd.DataFrame()
+
+    return _jolpica_laps_to_frame(
+        laps,
+        results,
+        year=year,
+        event_name=event_name,
+    )
+
+
 def load_fastf1_laps(
     year: int,
     event: str | int,
@@ -297,19 +566,38 @@ def load_fastf1_laps(
     cache_dir: str | Path = ".fastf1_cache",
     include_telemetry: bool = True,
     force_renew: bool = False,
-) -> tuple[object, pd.DataFrame]:
-    """Load a session and return ``(session, laps_dataframe)``."""
+) -> tuple[object | None, pd.DataFrame]:
+    """Load FastF1 data, falling back to Jolpica for completed races."""
 
-    session = load_fastf1_session(
-        year,
-        event,
-        session_name,
-        cache_dir=cache_dir,
-        include_telemetry=include_telemetry,
-        force_renew=force_renew,
-    )
+    try:
+        session = load_fastf1_session(
+            year,
+            event,
+            session_name,
+            cache_dir=cache_dir,
+            include_telemetry=include_telemetry,
+            force_renew=force_renew,
+        )
+        return session, session_laps_to_frame(session)
 
-    return session, session_laps_to_frame(session)
+    except Exception as fastf1_error:
+        if session_name.strip().casefold() not in RACE_SESSION_NAMES:
+            raise ValueError(
+                "FastF1 failed and Jolpica lap-by-lap fallback is only "
+                "available for Race sessions. "
+                f"FastF1 details: {fastf1_error}"
+            ) from fastf1_error
+
+        try:
+            laps = load_jolpica_race_laps(year, event)
+            return None, laps
+        except Exception as jolpica_error:
+            raise ValueError(
+                "Both FastF1 live timing and the Jolpica race-lap fallback "
+                "failed. "
+                f"FastF1: {fastf1_error} | "
+                f"Jolpica: {jolpica_error}"
+            ) from jolpica_error
 
 
 def available_events(schedule: pd.DataFrame) -> list[str]:
