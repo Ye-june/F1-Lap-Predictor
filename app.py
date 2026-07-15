@@ -61,7 +61,8 @@ def cached_fastf1_session(
 
 st.title("🏎️ F1 Lap Predictor")
 st.write(
-    "Predict F1 lap times with FastF1 data, compare model errors, and view the selected drivers on an accurate circuit map."
+    "Predict F1 lap times with FastF1 data, compare model errors, "
+    "and view the selected drivers on an accurate circuit map."
 )
 
 st.sidebar.header("Data")
@@ -80,7 +81,10 @@ if data_source == "Demo Data":
         value=35,
     )
     raw_laps = make_demo_laps(n_laps=n_laps)
-    st.sidebar.info("Demo data is only for offline development. Use FastF1 for the real project.")
+    st.sidebar.info(
+        "Demo data is only for offline development. "
+        "Use FastF1 for the real project."
+    )
 
 else:
     current_year = datetime.now().year
@@ -118,7 +122,10 @@ else:
         force_renew = st.sidebar.checkbox(
             "Force re-download FastF1 cache",
             value=False,
-            help="Use this if FastF1 says data was not loaded or the cache seems stale.",
+            help=(
+                "Use this only when a local FastF1 cache is stale. Do not use "
+                "it with a cache that was prepared locally for deployment."
+            ),
         )
 
         if st.sidebar.button("Clear Streamlit cache"):
@@ -144,10 +151,12 @@ else:
                 st.session_state["quick_laps_only"] = quick_laps_only
 
             except Exception as exc:
-                st.error(f"Could not load FastF1 data: {exc}")
+                st.error(f"Could not load race data: {exc}")
                 st.info(
-                    "Try one of these: uncheck telemetry, choose an older completed race, "
-                    "enable force re-download, or clear the Streamlit cache."
+                    "For the hosted app, choose a completed Race so the "
+                    "Jolpica fallback can be used. Qualifying, practice, "
+                    "telemetry, and track maps require FastF1 or a locally "
+                    "prepared cache."
                 )
 
         else:
@@ -160,6 +169,24 @@ else:
 if raw_laps is None:
     st.info("Choose a session in the sidebar and load the data to start.")
     st.stop()
+
+
+using_jolpica = (
+    "DataBackend" in raw_laps.columns
+    and raw_laps["DataBackend"]
+    .astype(str)
+    .str.casefold()
+    .eq("jolpica")
+    .any()
+)
+
+if using_jolpica:
+    st.warning(
+        "FastF1 live timing was unavailable, so this race was loaded from "
+        "Jolpica. The model can use lap times, drivers, teams, and positions, "
+        "but telemetry, tyre compounds, weather, and the track map are not "
+        "available for this fallback."
+    )
 
 
 try:
@@ -211,7 +238,8 @@ col4.metric("Train rows", f"{bundle.train_rows:,}")
 col5.metric("Test rows", f"{bundle.test_rows:,}")
 
 st.caption(
-    "Validation uses a chronological split, not a random split, so later laps are tested against earlier laps."
+    "Validation uses a chronological split, not a random split, "
+    "so later laps are tested against earlier laps."
 )
 
 
@@ -252,20 +280,24 @@ if session is not None:
                 lap_number=map_lap,
                 lap_progress=lap_progress,
                 show_corners=True,
-                background_color=_theme_color("theme.backgroundColor", "rgba(0,0,0,0)"),
+                background_color=_theme_color(
+                    "theme.backgroundColor",
+                    "rgba(0,0,0,0)",
+                ),
                 text_color=_theme_color("theme.textColor"),
                 driver_marker_size=7,
             ),
-            use_container_width=True,
+            width="stretch",
         )
-
         st.caption(
-            "Hover over the small dots to see driver, team, lap, tyre, and lap-time info."
+            "Hover over the small dots to see driver, team, lap, tyre, "
+            "and lap-time info."
         )
 
     except Exception as exc:
         st.warning(
-            "Track map needs telemetry. Re-load the session with 'Load telemetry for track map' checked. "
+            "Track map needs telemetry. Re-load the session with "
+            "'Load telemetry for track map' checked. "
             f"Details: {exc}"
         )
 
@@ -278,18 +310,18 @@ chart_col, error_col = st.columns([2, 1])
 with chart_col:
     st.plotly_chart(
         prediction_trace(predictions, selected_driver),
-        use_container_width=True,
+        width="stretch",
     )
 
 with error_col:
     st.plotly_chart(
         driver_error_bar(predictions),
-        use_container_width=True,
+        width="stretch",
     )
 
 st.plotly_chart(
     residual_chart(predictions, selected_driver),
-    use_container_width=True,
+    width="stretch",
 )
 
 
@@ -309,5 +341,5 @@ display_columns = [
 
 st.dataframe(
     predictions[display_columns].round(3),
-    use_container_width=True,
+    width="stretch",
 )
