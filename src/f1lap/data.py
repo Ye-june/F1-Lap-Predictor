@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
+import zipfile
 from pathlib import Path
 
 import pandas as pd
 
 
 RACE_SESSION_NAMES = {"race", "r"}
+DEFAULT_DEPLOY_CACHE_ZIP = Path("data") / "fastf1_deploy_cache.zip"
 
 
 def _fastf1():
@@ -19,27 +22,104 @@ def _fastf1():
     return fastf1
 
 
+def is_streamlit_cloud() -> bool:
+    """Detect Streamlit Community Cloud-style hosted runtimes."""
+
+    if os.environ.get("STREAMLIT_SHARING_MODE") == "true":
+        return True
+
+    return Path("/mount/src").exists()
+
+
+def deploy_cache_zip_path(cache_dir: str | Path) -> Path:
+    """Return the packed FastF1 cache zip next to the project root."""
+
+    cache_path = Path(cache_dir)
+    root = cache_path.parent if cache_path.name == ".fastf1_cache" else Path.cwd()
+    return root / DEFAULT_DEPLOY_CACHE_ZIP
+
+
+def extract_deploy_cache(
+    cache_dir: str | Path = ".fastf1_cache",
+    *,
+    zip_path: str | Path | None = None,
+    overwrite: bool = False,
+) -> Path | None:
+    """Extract a shipped FastF1 cache zip into ``cache_dir`` when needed."""
+
+    cache_path = Path(cache_dir)
+    archive = Path(zip_path) if zip_path is not None else deploy_cache_zip_path(cache_path)
+
+    if not archive.is_file():
+        return None
+
+    marker = cache_path / ".deploy_cache_ready"
+    if marker.exists() and not overwrite:
+        return cache_path
+
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(archive, "r") as zip_file:
+        zip_file.extractall(cache_path)
+
+    marker.write_text(f"extracted from {archive.name}\n", encoding="utf-8")
+    return cache_path
+
+
 def enable_fastf1_cache(
     cache_dir: str | Path = ".fastf1_cache",
     *,
     force_renew: bool = False,
+    offline_mode: bool | None = None,
+    use_deploy_cache: bool = True,
 ) -> Path:
-    """Create and enable the local FastF1 cache directory."""
+    """Create and enable the local FastF1 cache directory.
+
+    On Streamlit Cloud, Formula 1 live-timing endpoints are blocked for
+    datacenter IPs. Shipping ``data/fastf1_deploy_cache.zip`` and enabling
+    FastF1 offline mode lets the hosted app serve real FastF1 sessions from
+    that packed cache without contacting livetiming.formula1.com.
+    """
 
     fastf1 = _fastf1()
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
+
+    if use_deploy_cache and not force_renew:
+        extract_deploy_cache(cache_path)
 
     fastf1.Cache.enable_cache(
         str(cache_path),
         force_renew=force_renew,
     )
 
+    if offline_mode is None:
+        # Only force offline on Streamlit Cloud. Locally, keep live FastF1
+        # available for sessions that are not in the packed deploy cache.
+        offline_mode = (
+            use_deploy_cache
+            and not force_renew
+            and is_streamlit_cloud()
+            and deploy_cache_zip_path(cache_path).is_file()
+        )
+
+    if offline_mode:
+        fastf1.Cache.offline_mode(True)
+
     return cache_path
 
 
-def load_event_schedule(year: int) -> pd.DataFrame:
+def load_event_schedule(
+    year: int,
+    *,
+    cache_dir: str | Path = ".fastf1_cache",
+) -> pd.DataFrame:
     """Return an event schedule, falling back to Jolpica if needed."""
+
+    enable_fastf1_cache(
+        cache_dir,
+        force_renew=False,
+    )
 
     fastf1 = _fastf1()
     errors: list[str] = []
@@ -202,12 +282,14 @@ def load_fastf1_session(
     cache_dir: str | Path = ".fastf1_cache",
     include_telemetry: bool = True,
     force_renew: bool = False,
+    offline_mode: bool | None = None,
 ):
     """Load a FastF1 session before the caller considers other sources."""
 
     enable_fastf1_cache(
         cache_dir,
         force_renew=force_renew,
+        offline_mode=offline_mode,
     )
 
     errors: list[str] = []

@@ -8,6 +8,8 @@ A Streamlit machine-learning app that predicts Formula 1 lap times using real Fa
 
 - Loads real F1 session data from FastF1 instead of only using random demo data.
 - Keeps the demo-data path for offline testing and safe development.
+- On Streamlit Cloud, uses a packed FastF1 deploy cache in offline mode so hosted races can still get real tyres/telemetry when live timing is blocked.
+- Falls back to Jolpica for other completed Race sessions when FastF1 is unavailable (no telemetry/track map).
 - Cleans and prepares lap-time, tyre, pit, driver, team, weather, and track-status features.
 - Trains a tabular regression model with scikit-learn.
 - Uses `GradientBoostingRegressor` by default because gradient-boosted trees are a strong industry-style baseline for tabular prediction problems. `HistGradientBoostingRegressor` is also available for larger datasets.
@@ -35,6 +37,10 @@ F1-Lap-Predictor/
 ├── requirements.txt
 ├── pytest.ini
 ├── README.md
+├── data/
+│   └── fastf1_deploy_cache.zip
+├── scripts/
+│   └── preload_fastf1_cache.py
 ├── src/
 │   └── f1lap/
 │       ├── __init__.py
@@ -45,6 +51,7 @@ F1-Lap-Predictor/
 │       ├── track.py
 │       └── viz.py
 └── tests/
+    ├── test_data.py
     ├── test_features.py
     ├── test_model.py
     └── test_track.py
@@ -68,6 +75,24 @@ pytest
 
 The tests use demo data, so they do not need the internet or FastF1 downloads.
 
+## Streamlit Cloud + FastF1 only
+
+Formula 1 blocks datacenter IPs from live timing, so Streamlit Cloud cannot download new FastF1 sessions live.
+
+To serve real FastF1 data (tyres, weather, telemetry, track map) on the hosted app:
+
+1. On a home/residential network, preload and pack a session:
+
+```bash
+python scripts/preload_fastf1_cache.py --year 2025 --event "Australian Grand Prix" --session Race --pack
+```
+
+2. Commit `data/fastf1_deploy_cache.zip` and redeploy.
+
+3. On Streamlit Cloud, open that same season/event/session with **Force re-download** unchecked.
+
+The app extracts the zip into `.fastf1_cache/` and enables FastF1 offline mode on Streamlit Cloud so it reads the packed cache instead of contacting livetiming.formula1.com.
+
 ## Notes
 
-FastF1 data downloads can be slow the first time. The app creates a `.fastf1_cache/` folder so repeated loads are much faster and less likely to hit rate limits.
+FastF1 data downloads can be slow the first time. The app creates a `.fastf1_cache/` folder so repeated local loads are much faster and less likely to hit rate limits.

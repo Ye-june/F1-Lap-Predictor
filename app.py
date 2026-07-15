@@ -12,7 +12,14 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from f1lap.data import available_events, load_event_schedule, load_fastf1_laps
+from f1lap.data import (
+    available_events,
+    deploy_cache_zip_path,
+    extract_deploy_cache,
+    is_streamlit_cloud,
+    load_event_schedule,
+    load_fastf1_laps,
+)
 from f1lap.demo import make_demo_laps
 from f1lap.features import prepare_lap_frame
 from f1lap.model import predict_laps, train_model
@@ -38,10 +45,12 @@ def _theme_color(option_name: str, fallback: str | None = None) -> str | None:
 
 @st.cache_data(show_spinner="Loading F1 calendar...")
 def cached_schedule(year: int):
-    return load_event_schedule(year)
+    cache_dir = ROOT / ".fastf1_cache"
+    extract_deploy_cache(cache_dir)
+    return load_event_schedule(year, cache_dir=cache_dir)
 
 
-@st.cache_resource(show_spinner="Downloading FastF1 session data...")
+@st.cache_resource(show_spinner="Loading FastF1 session data...")
 def cached_fastf1_session(
     year: int,
     event: str,
@@ -49,11 +58,15 @@ def cached_fastf1_session(
     include_telemetry: bool,
     force_renew: bool,
 ):
+    cache_dir = ROOT / ".fastf1_cache"
+    if not force_renew:
+        extract_deploy_cache(cache_dir)
+
     return load_fastf1_laps(
         year,
         event,
         session_name,
-        cache_dir=ROOT / ".fastf1_cache",
+        cache_dir=cache_dir,
         include_telemetry=include_telemetry,
         force_renew=force_renew,
     )
@@ -123,10 +136,25 @@ else:
             "Force re-download FastF1 cache",
             value=False,
             help=(
-                "Use this only when a local FastF1 cache is stale. Do not use "
-                "it with a cache that was prepared locally for deployment."
+                "Use this only on a home network when refreshing a local cache. "
+                "Leave unchecked on Streamlit Cloud so the packed FastF1 "
+                "deploy cache can be used offline."
             ),
         )
+
+        deploy_zip = deploy_cache_zip_path(ROOT / ".fastf1_cache")
+        if deploy_zip.is_file():
+            st.sidebar.caption(
+                "Packed FastF1 deploy cache detected. On Streamlit Cloud the "
+                "app loads matching sessions from that cache in offline mode "
+                "(real FastF1 tyres/telemetry), instead of live timing."
+            )
+            if is_streamlit_cloud():
+                st.sidebar.info(
+                    "Hosted FastF1 live timing is blocked by Formula 1. "
+                    "Use a session included in the packed deploy cache for "
+                    "full FastF1 data."
+                )
 
         if st.sidebar.button("Clear Streamlit cache"):
             st.cache_data.clear()
@@ -153,10 +181,11 @@ else:
             except Exception as exc:
                 st.error(f"Could not load race data: {exc}")
                 st.info(
-                    "For the hosted app, choose a completed Race so the "
-                    "Jolpica fallback can be used. Qualifying, practice, "
-                    "telemetry, and track maps require FastF1 or a locally "
-                    "prepared cache."
+                    "On Streamlit Cloud, pick a session included in "
+                    "`data/fastf1_deploy_cache.zip` for full FastF1 data. "
+                    "Other completed Races can still use Jolpica (no "
+                    "telemetry/tyres/track map). Rebuild the pack locally with "
+                    "`python scripts/preload_fastf1_cache.py ... --pack`."
                 )
 
         else:

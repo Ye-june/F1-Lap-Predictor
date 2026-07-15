@@ -8,3 +8,8 @@ venv/
 models/
 .fastf1_cache/
 .streamlit/secrets.toml
+
+# Keep the packed deploy cache; ignore any unpacked working copies under data/
+data/*
+!data/fastf1_deploy_cache.zip
+!data/.gitkeep
